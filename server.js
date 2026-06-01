@@ -149,10 +149,7 @@ const VIEWER_HTML = `<!DOCTYPE html>
     --danger: #ff4747; --online: #47ff8a;
   }
   html, body { background: var(--bg); color: var(--text); font-family: 'Geist', sans-serif; font-size: 14px; }
-  body::before {
-    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 100;
-    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
-  }
+
   .layout { display: grid; grid-template-columns: 1fr 280px; grid-template-rows: auto 1fr; min-height: 100vh; max-width: 1400px; margin: 0 auto; padding: 24px; gap: 16px; }
   header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
   .logo { font-family: 'Geist Mono', monospace; font-size: 13px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
