@@ -18,11 +18,14 @@ function findFfmpeg() {
     '/usr/local/bin/ffmpeg',
     '/nix/var/nix/profiles/default/bin/ffmpeg',
   ];
-  // Try which first
-  try { return execSync('which ffmpeg').toString().trim(); } catch {}
-  // Try nix store glob
+  // Try nix store glob first (most reliable on Railway/Nixpacks)
   try {
-    const found = execSync('find /nix/store -name ffmpeg -type f 2>/dev/null | head -1').toString().trim();
+    const found = execSync('find /nix/store -name ffmpeg -type f 2>/dev/null | head -1', { shell: true }).toString().trim();
+    if (found) return found;
+  } catch {}
+  // Try which via shell (so PATH is fully resolved)
+  try {
+    const found = execSync('which ffmpeg', { shell: true }).toString().trim();
     if (found) return found;
   } catch {}
   // Try candidates
@@ -34,6 +37,7 @@ function findFfmpeg() {
 
 const FFMPEG_PATH = findFfmpeg();
 console.log('[ffmpeg] Path:', FFMPEG_PATH);
+console.log('[ffmpeg] Exists:', fs.existsSync(FFMPEG_PATH));
 
 // ── Node Media Server ─────────────────────────────────────────────────────────
 // Disable NMS HTTP/WS — we handle that ourselves
