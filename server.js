@@ -58,9 +58,11 @@ proxy.on('error', (err, req, res) => {
 });
 
 // Proxy /live/* to NMS internal HTTP
+// Express strips the mount prefix from req.url, so restore /live before forwarding
 app.use('/live', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-cache');
+  req.url = '/live' + req.url;
   proxy.web(req, res, { target: `http://127.0.0.1:${NMS_HTTP_PORT}` });
 });
 
