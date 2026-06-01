@@ -8,19 +8,35 @@ const { execSync } = require('child_process');
 
 const HTTP_PORT = process.env.PORT || 8000;
 const STREAM_KEY = process.env.STREAM_KEY || 'live';
-const NMS_HTTP_PORT = 8888;
+const NMS_HTTP_PORT = 8889;
 const NMS_RTMP_PORT = 1935;
 
-// Find ffmpeg
-let FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
-try {
-  FFMPEG_PATH = execSync('which ffmpeg').toString().trim();
-  console.log('[ffmpeg] Found at:', FFMPEG_PATH);
-} catch {
-  console.log('[ffmpeg] Using default path: ffmpeg');
+// Find ffmpeg — check common nix/system paths
+function findFfmpeg() {
+  const candidates = [
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    '/nix/var/nix/profiles/default/bin/ffmpeg',
+  ];
+  // Try which first
+  try { return execSync('which ffmpeg').toString().trim(); } catch {}
+  // Try nix store glob
+  try {
+    const found = execSync('find /nix/store -name ffmpeg -type f 2>/dev/null | head -1').toString().trim();
+    if (found) return found;
+  } catch {}
+  // Try candidates
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return 'ffmpeg';
 }
 
+const FFMPEG_PATH = findFfmpeg();
+console.log('[ffmpeg] Path:', FFMPEG_PATH);
+
 // ── Node Media Server ─────────────────────────────────────────────────────────
+// Disable NMS HTTP/WS — we handle that ourselves
 const nms = new NodeMediaServer({
   rtmp: {
     port: NMS_RTMP_PORT,
@@ -57,6 +73,11 @@ nms.on('donePublish', (id, streamPath) => console.log('[RTMP] Stream ended:', st
 const app = express();
 const proxy = httpProxy.createProxyServer({});
 
+proxy.on('error', (err, req, res) => {
+  res.writeHead(502);
+  res.end('Stream not ready');
+});
+
 // Proxy /live/* to NMS internal HTTP
 app.use('/live', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -66,8 +87,10 @@ app.use('/live', (req, res) => {
 
 app.get('/status', (req, res) => {
   const hlsDir = `/tmp/live/${STREAM_KEY}`;
-  const streaming = fs.existsSync(hlsDir) &&
-    fs.readdirSync(hlsDir).some(f => f.endsWith('.m3u8'));
+  let streaming = false;
+  try {
+    streaming = fs.existsSync(hlsDir) && fs.readdirSync(hlsDir).some(f => f.endsWith('.m3u8'));
+  } catch {}
   res.json({ streaming, hlsUrl: `/live/${STREAM_KEY}/index.m3u8` });
 });
 
@@ -75,7 +98,7 @@ app.get('/', (req, res) => res.send(VIEWER_HTML));
 
 const server = http.createServer(app);
 
-// ── WebSocket ─────────────────────────────────────────────────────────────────
+// ── WebSocket (our own, on HTTP_PORT only) ────────────────────────────────────
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
 let piClient = null;
@@ -160,7 +183,7 @@ const VIEWER_HTML = `<!DOCTYPE html>
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .video-wrap { position: relative; background: #000; border: 1px solid var(--border); aspect-ratio: 16/9; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
-  .video-overlay { position: absolute; top: 12px; left: 12px; font-family: 'Geist Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.5); pointer-events: none; line-height: 1.8; }
+  .video-overlay { position: absolute; top: 12px; left: 12px; font-family: 'Geist Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.5); pointer-events: none; }
   .offline-screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #000; font-family: 'Geist Mono', monospace; color: var(--muted); font-size: 12px; letter-spacing: 0.05em; }
   .controls { display: flex; flex-direction: column; gap: 4px; }
   .panel { background: var(--surface); border: 1px solid var(--border); padding: 20px; }
@@ -173,7 +196,7 @@ const VIEWER_HTML = `<!DOCTYPE html>
   input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 2px; outline: none; cursor: pointer; background: linear-gradient(to right, var(--accent) var(--pct,50%), var(--border) var(--pct,50%)); }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: var(--accent); border-radius: 0; cursor: pointer; transition: transform 0.1s; }
   input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
-  .reset-btn { width: 100%; padding: 10px; background: transparent; border: 1px solid var(--border); color: var(--muted); font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.05em; cursor: pointer; margin-top: 16px; transition: all 0.2s; text-transform: uppercase; }
+  .reset-btn { width: 100%; padding: 10px; background: transparent; border: 1px solid var(--border); color: var(--muted); font-family: 'Geist Mono', monospace; font-size: 11px; cursor: pointer; margin-top: 16px; transition: all 0.2s; text-transform: uppercase; }
   .reset-btn:hover { border-color: var(--accent); color: var(--accent); }
   .pi-status { display: flex; align-items: center; gap: 8px; font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--muted); margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
   .note { font-size: 10px; color: var(--muted); line-height: 1.6; font-family: 'Geist Mono', monospace; margin-top: 8px; }
@@ -231,71 +254,69 @@ const VIEWER_HTML = `<!DOCTYPE html>
   </div>
 </div>
 <script>
-const HLS_URL = '/live/live/index.m3u8';
-const WS_URL = (location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws';
-const video = document.getElementById('video');
-const offline = document.getElementById('offline');
-let filterState = { brightness:1, contrast:1, saturation:1 };
-let ws, piConnected = false;
-let camControls = { exposure:0, sharpness:1.0 };
-let sendTimer = null;
+const HLS_URL='/live/live/index.m3u8';
+const WS_URL=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws';
+const video=document.getElementById('video');
+const offline=document.getElementById('offline');
+let filterState={brightness:1,contrast:1,saturation:1};
+let ws,piConnected=false;
+let camControls={exposure:0,sharpness:1.0};
+let sendTimer=null;
 
-function startHLS() {
-  if (Hls.isSupported()) {
-    const hls = new Hls({ lowLatencyMode:true, liveSyncDurationCount:2, liveMaxLatencyDurationCount:4, maxLiveSyncPlaybackRate:1.5 });
-    hls.loadSource(HLS_URL);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play(); offline.style.display='none'; setStreamStatus(true); });
-    hls.on(Hls.Events.ERROR, (e,d) => { if(d.fatal){ setStreamStatus(false); setTimeout(startHLS,4000); } });
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src=HLS_URL; video.play(); offline.style.display='none'; setStreamStatus(true);
+function startHLS(){
+  if(Hls.isSupported()){
+    const hls=new Hls({lowLatencyMode:true,liveSyncDurationCount:2,liveMaxLatencyDurationCount:4,maxLiveSyncPlaybackRate:1.5});
+    hls.loadSource(HLS_URL); hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED,()=>{video.play();offline.style.display='none';setStreamStatus(true);});
+    hls.on(Hls.Events.ERROR,(e,d)=>{if(d.fatal){setStreamStatus(false);setTimeout(startHLS,4000);}});
+  } else if(video.canPlayType('application/vnd.apple.mpegurl')){
+    video.src=HLS_URL;video.play();offline.style.display='none';setStreamStatus(true);
   }
 }
 
-function setStreamStatus(live) {
+function setStreamStatus(live){
   document.getElementById('stream-dot').className='dot'+(live?' live':'');
   document.getElementById('stream-label').textContent=live?'LIVE':'WAITING';
   offline.style.display=live?'none':'flex';
 }
 
-async function waitForStream() {
-  try { const d=await (await fetch('/status')).json(); if(d.streaming){startHLS();return;} } catch {}
+async function waitForStream(){
+  try{const d=await(await fetch('/status')).json();if(d.streaming){startHLS();return;}}catch{}
   setTimeout(waitForStream,3000);
 }
 waitForStream();
 
-setInterval(()=>{ if(video.readyState>=2) document.getElementById('vid-info').textContent=video.videoWidth+'×'+video.videoHeight; },2000);
+setInterval(()=>{if(video.readyState>=2)document.getElementById('vid-info').textContent=video.videoWidth+'×'+video.videoHeight;},2000);
 
-function updateFilter(el,prop,labelId,unit) {
+function updateFilter(el,prop,labelId,unit){
   filterState[prop]=parseFloat(el.value)/100;
   video.style.filter='brightness('+filterState.brightness+') contrast('+filterState.contrast+') saturate('+filterState.saturation+')';
   document.getElementById(labelId).textContent=el.value+unit;
   updateTrack(el);
 }
 
-function resetFilters() {
+function resetFilters(){
   ['brightness','contrast','saturation'].forEach(p=>{
-    const el=document.getElementById(p); el.value=100; filterState[p]=1; updateTrack(el);
+    const el=document.getElementById(p);el.value=100;filterState[p]=1;updateTrack(el);
     document.getElementById(p==='brightness'?'bright-val':p==='contrast'?'cont-val':'sat-val').textContent='100%';
   });
   video.style.filter='';
 }
 
-function updateTrack(el) {
+function updateTrack(el){
   el.style.setProperty('--pct',((parseFloat(el.value)-parseFloat(el.min))/(parseFloat(el.max)-parseFloat(el.min))*100).toFixed(1)+'%');
 }
-
 document.querySelectorAll('input[type=range]').forEach(updateTrack);
 
-function updateCam(el,prop,labelId,dec) {
-  const v=parseFloat(el.value); camControls[prop]=v;
+function updateCam(el,prop,labelId,dec){
+  const v=parseFloat(el.value);camControls[prop]=v;
   document.getElementById(labelId).textContent=v.toFixed(dec);
   updateTrack(el);
   clearTimeout(sendTimer);
-  sendTimer=setTimeout(()=>{ if(ws&&ws.readyState===WebSocket.OPEN&&piConnected) ws.send(JSON.stringify({type:'control',...camControls})); },120);
+  sendTimer=setTimeout(()=>{if(ws&&ws.readyState===WebSocket.OPEN&&piConnected)ws.send(JSON.stringify({type:'control',...camControls}));},120);
 }
 
-function connectWS() {
+function connectWS(){
   ws=new WebSocket(WS_URL);
   ws.onopen=()=>ws.send(JSON.stringify({type:'identify',role:'browser'}));
   ws.onmessage=(e)=>{
