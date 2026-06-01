@@ -4,38 +4,13 @@ const http = require('http');
 const httpProxy = require('http-proxy');
 const WebSocket = require('ws');
 const fs = require('fs');
-const { execSync } = require('child_process');
-
 const HTTP_PORT = process.env.PORT || 8000;
 const STREAM_KEY = process.env.STREAM_KEY || 'live';
 const NMS_HTTP_PORT = 8889;
 const NMS_RTMP_PORT = 1935;
 
-// Find ffmpeg — check common nix/system paths
-function findFfmpeg() {
-  const candidates = [
-    '/usr/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-    '/nix/var/nix/profiles/default/bin/ffmpeg',
-  ];
-  // Try nix store glob first (most reliable on Railway/Nixpacks)
-  try {
-    const found = execSync('find /nix/store -name ffmpeg -type f 2>/dev/null | head -1', { shell: true }).toString().trim();
-    if (found) return found;
-  } catch {}
-  // Try which via shell (so PATH is fully resolved)
-  try {
-    const found = execSync('which ffmpeg', { shell: true }).toString().trim();
-    if (found) return found;
-  } catch {}
-  // Try candidates
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return 'ffmpeg';
-}
-
-const FFMPEG_PATH = findFfmpeg();
+// ffmpeg-static ships a prebuilt binary as a node module — no PATH dependency
+const FFMPEG_PATH = require('ffmpeg-static');
 console.log('[ffmpeg] Path:', FFMPEG_PATH);
 console.log('[ffmpeg] Exists:', fs.existsSync(FFMPEG_PATH));
 
