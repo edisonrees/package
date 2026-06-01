@@ -226,6 +226,10 @@ const VIEWER_HTML = `<!DOCTYPE html>
         <div class="control-label"><span>Sharpness</span><span class="control-value" id="sharp-val">1.0</span></div>
         <input type="range" id="sharpness" min="0" max="2" value="1" step="0.1" oninput="updateCam(this,'sharpness','sharp-val',1)">
       </div>
+      <div class="control-row">
+        <div class="control-label"><span>ISO</span><span class="control-value" id="iso-val">AUTO</span></div>
+        <input type="range" id="iso" min="0" max="1600" value="0" step="100" oninput="updateIso(this)">
+      </div>
       <div class="pi-status"><div class="dot" id="ws-dot"></div><span id="ws-label">Pi not connected</span></div>
       <div class="note">Camera controls require Pi stream client running.</div>
     </div>
@@ -238,7 +242,7 @@ const video=document.getElementById('video');
 const offline=document.getElementById('offline');
 let filterState={brightness:1,contrast:1,saturation:1};
 let ws,piConnected=false;
-let camControls={exposure:0,sharpness:1.0};
+let camControls={exposure:0,sharpness:1.0,iso:0};
 let sendTimer=null;
 
 function startHLS(){
@@ -289,6 +293,14 @@ document.querySelectorAll('input[type=range]').forEach(updateTrack);
 function updateCam(el,prop,labelId,dec){
   const v=parseFloat(el.value);camControls[prop]=v;
   document.getElementById(labelId).textContent=v.toFixed(dec);
+  updateTrack(el);
+  clearTimeout(sendTimer);
+  sendTimer=setTimeout(()=>{if(ws&&ws.readyState===WebSocket.OPEN&&piConnected)ws.send(JSON.stringify({type:'control',...camControls}));},120);
+}
+
+function updateIso(el){
+  const v=parseInt(el.value);camControls.iso=v;
+  document.getElementById('iso-val').textContent=v===0?'AUTO':v.toString();
   updateTrack(el);
   clearTimeout(sendTimer);
   sendTimer=setTimeout(()=>{if(ws&&ws.readyState===WebSocket.OPEN&&piConnected)ws.send(JSON.stringify({type:'control',...camControls}));},120);
