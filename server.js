@@ -94,6 +94,7 @@ wss.on('connection', (ws) => {
       piClient = ws;
       console.log('[WS] Pi registered');
       ws.send(JSON.stringify({ type: 'ready' }));
+      ws.send(JSON.stringify({ type: 'start_temp' }));
       browserClients.forEach(c => {
         if (c.readyState === WebSocket.OPEN)
           c.send(JSON.stringify({ type: 'pi_connected' }));
@@ -109,6 +110,13 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'control' && piClient && piClient.readyState === WebSocket.OPEN) {
       piClient.send(JSON.stringify(msg));
+    }
+
+    if (msg.type === 'temp') {
+      browserClients.forEach(c => {
+        if (c.readyState === WebSocket.OPEN)
+          c.send(JSON.stringify(msg));
+      });
     }
   });
 
@@ -188,6 +196,7 @@ const VIEWER_HTML = `<!DOCTYPE html>
     <div style="display:flex;gap:16px;align-items:center">
       <div class="status-pill"><div class="dot" id="stream-dot"></div><span id="stream-label">WAITING</span></div>
       <div class="status-pill"><div class="dot" id="pi-dot"></div><span id="pi-label">PI OFFLINE</span></div>
+      <div class="status-pill" id="temp-pill" style="display:none"><span id="temp-label" style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--muted)">--°C</span></div>
     </div>
   </header>
   <div class="video-wrap">
@@ -313,8 +322,9 @@ function connectWS(){
     const msg=JSON.parse(e.data);
     const on=msg.type==='pi_connected'||(msg.type==='pi_status'&&msg.connected);
     const off=msg.type==='pi_disconnected'||(msg.type==='pi_status'&&!msg.connected);
-    if(on){piConnected=true;document.getElementById('ws-dot').className='dot online';document.getElementById('ws-label').textContent='Pi connected';document.getElementById('pi-dot').className='dot online';document.getElementById('pi-label').textContent='PI ONLINE';}
-    if(off){piConnected=false;document.getElementById('ws-dot').className='dot';document.getElementById('ws-label').textContent='Pi not connected';document.getElementById('pi-dot').className='dot';document.getElementById('pi-label').textContent='PI OFFLINE';}
+    if(on){piConnected=true;document.getElementById('ws-dot').className='dot online';document.getElementById('ws-label').textContent='Pi connected';document.getElementById('pi-dot').className='dot online';document.getElementById('pi-label').textContent='PI ONLINE';document.getElementById('temp-pill').style.display='flex';}
+    if(off){piConnected=false;document.getElementById('ws-dot').className='dot';document.getElementById('ws-label').textContent='Pi not connected';document.getElementById('pi-dot').className='dot';document.getElementById('pi-label').textContent='PI OFFLINE';document.getElementById('temp-pill').style.display='none';}
+    if(msg.type==='temp'){const t=msg.value;const color=t>=70?'#ff4747':t>=60?'#ffaa00':'var(--muted)';document.getElementById('temp-label').textContent=t.toFixed(1)+'°C';document.getElementById('temp-label').style.color=color;}
   };
   ws.onclose=()=>setTimeout(connectWS,3000);
 }
