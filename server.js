@@ -4,16 +4,26 @@ const http = require('http');
 const httpProxy = require('http-proxy');
 const WebSocket = require('ws');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 const HTTP_PORT = process.env.PORT || 8000;
-const RTMP_PORT = 1935;
 const STREAM_KEY = process.env.STREAM_KEY || 'live';
 const NMS_HTTP_PORT = 8888;
+const NMS_RTMP_PORT = 1935;
+
+// Find ffmpeg
+let FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
+try {
+  FFMPEG_PATH = execSync('which ffmpeg').toString().trim();
+  console.log('[ffmpeg] Found at:', FFMPEG_PATH);
+} catch {
+  console.log('[ffmpeg] Using default path: ffmpeg');
+}
 
 // ── Node Media Server ─────────────────────────────────────────────────────────
 const nms = new NodeMediaServer({
   rtmp: {
-    port: RTMP_PORT,
+    port: NMS_RTMP_PORT,
     chunk_size: 60000,
     gop_cache: true,
     ping: 30,
@@ -25,7 +35,7 @@ const nms = new NodeMediaServer({
     allow_origin: '*'
   },
   trans: {
-    ffmpeg: process.env.FFMPEG_PATH || '/usr/bin/ffmpeg',
+    ffmpeg: FFMPEG_PATH,
     tasks: [
       {
         app: 'live',
@@ -43,18 +53,17 @@ nms.run();
 nms.on('prePublish', (id, streamPath) => console.log('[RTMP] Stream started:', streamPath));
 nms.on('donePublish', (id, streamPath) => console.log('[RTMP] Stream ended:', streamPath));
 
-// ── Express + proxy ───────────────────────────────────────────────────────────
+// ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 const proxy = httpProxy.createProxyServer({});
 
-// Proxy /live/* directly to NMS internal HTTP server
+// Proxy /live/* to NMS internal HTTP
 app.use('/live', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-cache');
   proxy.web(req, res, { target: `http://127.0.0.1:${NMS_HTTP_PORT}` });
 });
 
-// Status
 app.get('/status', (req, res) => {
   const hlsDir = `/tmp/live/${STREAM_KEY}`;
   const streaming = fs.existsSync(hlsDir) &&
@@ -62,7 +71,6 @@ app.get('/status', (req, res) => {
   res.json({ streaming, hlsUrl: `/live/${STREAM_KEY}/index.m3u8` });
 });
 
-// Viewer page
 app.get('/', (req, res) => res.send(VIEWER_HTML));
 
 const server = http.createServer(app);
@@ -73,7 +81,7 @@ const wss = new WebSocket.Server({ server, path: '/ws' });
 let piClient = null;
 const browserClients = new Set();
 
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws) => {
   ws.on('message', (data) => {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
@@ -115,7 +123,7 @@ wss.on('connection', (ws, req) => {
 
 server.listen(HTTP_PORT, () => {
   console.log(`[HTTP] Viewer on port ${HTTP_PORT}`);
-  console.log(`[RTMP] Ingest on port ${RTMP_PORT}`);
+  console.log(`[RTMP] Ingest on port ${NMS_RTMP_PORT}`);
   console.log(`[HLS]  Stream at /live/${STREAM_KEY}/index.m3u8`);
 });
 
@@ -162,10 +170,9 @@ const VIEWER_HTML = `<!DOCTYPE html>
   .control-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 12px; }
   .control-label span:first-child { color: var(--text); font-weight: 500; }
   .control-value { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--accent); min-width: 36px; text-align: right; }
-  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 2px; background: var(--border); outline: none; cursor: pointer; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 2px; outline: none; cursor: pointer; background: linear-gradient(to right, var(--accent) var(--pct,50%), var(--border) var(--pct,50%)); }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; background: var(--accent); border-radius: 0; cursor: pointer; transition: transform 0.1s; }
   input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.3); }
-  input[type=range] { background: linear-gradient(to right, var(--accent) var(--pct,50%), var(--border) var(--pct,50%)); }
   .reset-btn { width: 100%; padding: 10px; background: transparent; border: 1px solid var(--border); color: var(--muted); font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.05em; cursor: pointer; margin-top: 16px; transition: all 0.2s; text-transform: uppercase; }
   .reset-btn:hover { border-color: var(--accent); color: var(--accent); }
   .pi-status { display: flex; align-items: center; gap: 8px; font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--muted); margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
@@ -241,67 +248,64 @@ function startHLS() {
     hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play(); offline.style.display='none'; setStreamStatus(true); });
     hls.on(Hls.Events.ERROR, (e,d) => { if(d.fatal){ setStreamStatus(false); setTimeout(startHLS,4000); } });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = HLS_URL; video.play(); offline.style.display='none'; setStreamStatus(true);
+    video.src=HLS_URL; video.play(); offline.style.display='none'; setStreamStatus(true);
   }
 }
 
 function setStreamStatus(live) {
-  document.getElementById('stream-dot').className = 'dot'+(live?' live':'');
-  document.getElementById('stream-label').textContent = live?'LIVE':'WAITING';
-  offline.style.display = live?'none':'flex';
+  document.getElementById('stream-dot').className='dot'+(live?' live':'');
+  document.getElementById('stream-label').textContent=live?'LIVE':'WAITING';
+  offline.style.display=live?'none':'flex';
 }
 
 async function waitForStream() {
-  try { const d = await (await fetch('/status')).json(); if(d.streaming){startHLS();return;} } catch {}
-  setTimeout(waitForStream, 3000);
+  try { const d=await (await fetch('/status')).json(); if(d.streaming){startHLS();return;} } catch {}
+  setTimeout(waitForStream,3000);
 }
 waitForStream();
 
 setInterval(()=>{ if(video.readyState>=2) document.getElementById('vid-info').textContent=video.videoWidth+'×'+video.videoHeight; },2000);
 
-function updateFilter(el, prop, labelId, unit) {
-  const v = parseFloat(el.value);
-  filterState[prop] = v/100;
-  video.style.filter = 'brightness('+filterState.brightness+') contrast('+filterState.contrast+') saturate('+filterState.saturation+')';
-  document.getElementById(labelId).textContent = v+unit;
+function updateFilter(el,prop,labelId,unit) {
+  filterState[prop]=parseFloat(el.value)/100;
+  video.style.filter='brightness('+filterState.brightness+') contrast('+filterState.contrast+') saturate('+filterState.saturation+')';
+  document.getElementById(labelId).textContent=el.value+unit;
   updateTrack(el);
 }
 
 function resetFilters() {
-  ['brightness','contrast','saturation'].forEach(p => {
-    const el = document.getElementById(p); el.value=100; filterState[p]=1; updateTrack(el);
+  ['brightness','contrast','saturation'].forEach(p=>{
+    const el=document.getElementById(p); el.value=100; filterState[p]=1; updateTrack(el);
     document.getElementById(p==='brightness'?'bright-val':p==='contrast'?'cont-val':'sat-val').textContent='100%';
   });
   video.style.filter='';
 }
 
 function updateTrack(el) {
-  const pct = ((parseFloat(el.value)-parseFloat(el.min))/(parseFloat(el.max)-parseFloat(el.min))*100).toFixed(1)+'%';
-  el.style.setProperty('--pct', pct);
+  el.style.setProperty('--pct',((parseFloat(el.value)-parseFloat(el.min))/(parseFloat(el.max)-parseFloat(el.min))*100).toFixed(1)+'%');
 }
 
 document.querySelectorAll('input[type=range]').forEach(updateTrack);
 
-function updateCam(el, prop, labelId, decimals) {
-  const v = parseFloat(el.value);
-  camControls[prop] = v;
-  document.getElementById(labelId).textContent = v.toFixed(decimals);
+function updateCam(el,prop,labelId,dec) {
+  const v=parseFloat(el.value); camControls[prop]=v;
+  document.getElementById(labelId).textContent=v.toFixed(dec);
   updateTrack(el);
   clearTimeout(sendTimer);
-  sendTimer = setTimeout(()=>{ if(ws&&ws.readyState===WebSocket.OPEN&&piConnected) ws.send(JSON.stringify({type:'control',...camControls})); }, 120);
+  sendTimer=setTimeout(()=>{ if(ws&&ws.readyState===WebSocket.OPEN&&piConnected) ws.send(JSON.stringify({type:'control',...camControls})); },120);
 }
 
 function connectWS() {
-  ws = new WebSocket(WS_URL);
-  ws.onopen = () => ws.send(JSON.stringify({type:'identify',role:'browser'}));
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    const on = msg.type==='pi_connected'||(msg.type==='pi_status'&&msg.connected);
-    const off = msg.type==='pi_disconnected'||(msg.type==='pi_status'&&!msg.connected);
-    if(on){ piConnected=true; document.getElementById('ws-dot').className='dot online'; document.getElementById('ws-label').textContent='Pi connected'; document.getElementById('pi-dot').className='dot online'; document.getElementById('pi-label').textContent='PI ONLINE'; }
-    if(off){ piConnected=false; document.getElementById('ws-dot').className='dot'; document.getElementById('ws-label').textContent='Pi not connected'; document.getElementById('pi-dot').className='dot'; document.getElementById('pi-label').textContent='PI OFFLINE'; }
+  ws=new WebSocket(WS_URL);
+  ws.onopen=()=>ws.send(JSON.stringify({type:'identify',role:'browser'}));
+  ws.onmessage=(e)=>{
+    const msg=JSON.parse(e.data);
+    const on=msg.type==='pi_connected'||(msg.type==='pi_status'&&msg.connected);
+    const off=msg.type==='pi_disconnected'||(msg.type==='pi_status'&&!msg.connected);
+    if(on){piConnected=true;document.getElementById('ws-dot').className='dot online';document.getElementById('ws-label').textContent='Pi connected';document.getElementById('pi-dot').className='dot online';document.getElementById('pi-label').textContent='PI ONLINE';}
+    if(off){piConnected=false;document.getElementById('ws-dot').className='dot';document.getElementById('ws-label').textContent='Pi not connected';document.getElementById('pi-dot').className='dot';document.getElementById('pi-label').textContent='PI OFFLINE';}
   };
-  ws.onclose = () => setTimeout(connectWS, 3000);
+  ws.onclose=()=>setTimeout(connectWS,3000);
 }
 connectWS();
 </script>
